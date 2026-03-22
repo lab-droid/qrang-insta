@@ -1,0 +1,5 @@
+{
+  "name": "큐랑 인스타그램 캐러셀 AI",
+  "description": "An AI-powered Instagram Carousel generator that creates structured content, copywriting, and high-quality images in multiple languages using Gemini 3 Pro.",
+  "requestFramePermissions": []
+}
