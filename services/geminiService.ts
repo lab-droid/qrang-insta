@@ -1,4 +1,4 @@
-import { GoogleGenAI, Type, Schema } from "@google/genai";
+import { GoogleGenAI, Type, Schema, ThinkingLevel } from "@google/genai";
 import { CarouselStructure, FinalCaption, Language, SlideContent } from "../types";
 
 // Helper to ensure API key is available via the specific paid key flow
@@ -67,7 +67,7 @@ export const suggestCarrierSEOTopics = async (apiKey?: string): Promise<string[]
 };
 
 // --- 1.5 Deep Research ---
-export const performDeepResearch = async (topic: string, apiKey?: string): Promise<{ usp: string, description: string }> => {
+export const performDeepResearch = async (topic: string, apiKey?: string): Promise<{ usp: string, description: string, targetAudience: string, toneAndManner: string }> => {
   const ai = await getClient(apiKey);
   
   const prompt = `
@@ -75,12 +75,14 @@ export const performDeepResearch = async (topic: string, apiKey?: string): Promi
     
     1. Identify the most compelling Unique Selling Proposition (USP) or "Hook" that would make this content go viral. What is the core value proposition?
     2. Write a detailed description of the content strategy. What key points should be covered? What is the angle?
+    3. Identify the most suitable Target Audience for this content (e.g., 2030 office workers, beginner travelers, etc.).
+    4. Suggest the most effective Tone and Manner for this content (e.g., professional, humorous, emotional, etc.).
     
     Return the result in Korean (Hangul).
   `;
 
   const response = await ai.models.generateContent({
-    model: 'gemini-3-pro-preview',
+    model: 'gemini-3.1-pro-preview',
     contents: prompt,
     config: {
       responseMimeType: "application/json",
@@ -88,11 +90,13 @@ export const performDeepResearch = async (topic: string, apiKey?: string): Promi
         type: Type.OBJECT,
         properties: {
           usp: { type: Type.STRING, description: "The core hook or unique selling point (Korean)" },
-          description: { type: Type.STRING, description: "Detailed content strategy description (Korean)" }
+          description: { type: Type.STRING, description: "Detailed content strategy description (Korean)" },
+          targetAudience: { type: Type.STRING, description: "The target audience for this content (Korean)" },
+          toneAndManner: { type: Type.STRING, description: "The tone and manner for this content (Korean)" }
         },
-        required: ['usp', 'description']
+        required: ['usp', 'description', 'targetAudience', 'toneAndManner']
       },
-      thinkingConfig: { thinkingBudget: 2048 } // Use thinking for deep analysis
+      thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH } // Use thinking for deep analysis
     }
   });
 
@@ -100,11 +104,13 @@ export const performDeepResearch = async (topic: string, apiKey?: string): Promi
     const data = JSON.parse(response.text || "{}");
     return {
       usp: data.usp || "",
-      description: data.description || ""
+      description: data.description || "",
+      targetAudience: data.targetAudience || "",
+      toneAndManner: data.toneAndManner || ""
     };
   } catch (e) {
     console.error("Deep Research failed", e);
-    return { usp: "", description: "" };
+    return { usp: "", description: "", targetAudience: "", toneAndManner: "" };
   }
 };
 
@@ -115,6 +121,8 @@ export const generateCarouselStructure = async (
   slideCount: number,
   usp?: string,
   description?: string,
+  targetAudience?: string,
+  toneAndManner?: string,
   apiKey?: string
 ): Promise<CarouselStructure> => {
   const ai = await getClient(apiKey);
@@ -122,16 +130,19 @@ export const generateCarouselStructure = async (
   const systemPrompt = `
     You are an expert Instagram content strategist. 
     Create a high-performing carousel structure (${slideCount} slides) for the topic: "${topic}".
-    The content must be in ${language === 'KO' ? 'Korean' : language === 'JA' ? 'Japanese' : 'English'}.
+    The content must be in ${language === 'KO' ? 'Korean' : language === 'JA' ? 'Japanese' : language === 'ZH' ? 'Chinese' : 'English'}.
 
     ${usp ? `CORE USP (Focus on this): ${usp}` : ''}
     ${description ? `CONTEXT & DETAILS: ${description}` : ''}
+    ${targetAudience ? `TARGET AUDIENCE: ${targetAudience}` : ''}
+    ${toneAndManner ? `TONE & MANNER: ${toneAndManner}` : ''}
     
     Structure Requirements:
     - Total Slides: ${slideCount}
     - Slide 1: Hook (Intro)
     ${slideCount > 1 ? `- Slide ${slideCount}: Call to Action (CTA)` : ''}
     - Intermediate Slides: Problem, Agitation, Solution, Value, Proof, etc. as appropriate for the count.
+    - All text overlays in the carousel must use the "Pretendard" font with a consistent Semi-Bold weight for visual consistency.
 
     For 'textOverlay', provide the EXACT text that should appear visibly ON the image. Keep it short, punchy, and readable.
     
@@ -218,6 +229,8 @@ export const generateSlideImage = async (
     1. Text: "${textOverlay}"
     2. Legibility: High contrast against background.
     3. Style: Modern, clean, professional advertising typography.
+    4. Font: Use "Pretendard" (a clean, modern sans-serif) for all text.
+    5. Weight: Maintain a consistent Semi-Bold weight for all text overlays across the carousel.
     
     [SCENE DESCRIPTION]
     ${prompt}
@@ -285,7 +298,7 @@ export const generateInstagramCaption = async (topic: string, structure: Carouse
   const ai = await getClient(apiKey);
   
   const slideSummaries = structure.slides.map(s => `[${s.role}] ${s.textOverlay}`).join('\n');
-  const langName = language === 'KO' ? 'Korean' : language === 'JA' ? 'Japanese' : 'English';
+  const langName = language === 'KO' ? 'Korean' : language === 'JA' ? 'Japanese' : language === 'ZH' ? 'Chinese' : 'English';
 
   const response = await ai.models.generateContent({
     model: 'gemini-3-flash-preview',

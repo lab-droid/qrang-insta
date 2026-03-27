@@ -26,7 +26,9 @@ import {
   TrendingUp,
   Key,
   FolderDown,
-  ArrowDownToLine
+  ArrowDownToLine,
+  Users,
+  Palette
 } from 'lucide-react';
 import { 
   suggestCarrierSEOTopics,
@@ -43,7 +45,7 @@ import {
   FinalCaption
 } from './types';
 
-const LANGUAGES: Language[] = ['KO', 'EN', 'JA'];
+const LANGUAGES: Language[] = ['KO', 'EN', 'JA', 'ZH'];
 
 // Utility to handle API Key Selection
 const checkApiKey = async () => {
@@ -61,8 +63,13 @@ export default function App() {
     topic: '',
     usp: '',
     description: '',
+    targetAudience: '',
+    toneAndManner: '',
     slideCount: 5, // Default slide count
     referenceImages: [], // Now an array
+    selectedLanguages: ['KO', 'EN', 'JA', 'ZH'],
+    isAutoMode: false,
+    sessionSeed: 0,
     structures: {},
     generatedImages: {},
     finalCaptions: {},
@@ -84,8 +91,6 @@ export default function App() {
     const storedKey = localStorage.getItem('gemini_api_key');
     if (storedKey) {
       setApiKey(storedKey);
-    } else {
-      setIsApiKeyModalOpen(true);
     }
     checkApiKey().catch(console.error);
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -159,11 +164,13 @@ export default function App() {
       updateState({
         usp: result.usp,
         description: result.description,
+        targetAudience: result.targetAudience,
+        toneAndManner: result.toneAndManner,
         isResearching: false
       });
     } catch (e) {
       console.error(e);
-      updateState({ isResearching: false, error: "딥리서치 중 오류가 발생했습니다." });
+      updateState({ isResearching: false, error: "AI 자동 기획 중 오류가 발생했습니다." });
     }
   };
 
@@ -204,7 +211,7 @@ export default function App() {
     }
   };
 
-  const startGeneration = async () => {
+  const handleGenerateStructures = async (autoMode: boolean) => {
     if (!apiKey) {
       setIsApiKeyModalOpen(true);
       return;
@@ -212,12 +219,13 @@ export default function App() {
     const selectedTopic = state.topic;
     if (!selectedTopic.trim()) return;
 
-    // Generate a unified seed for this session to ensure consistency across languages
     const sessionSeed = Math.floor(Math.random() * 1000000);
 
     updateState({ 
       currentStep: GenerationStep.STRUCTURE_DESIGN, 
       isProcessing: true,
+      isAutoMode: autoMode,
+      sessionSeed,
       processingMessage: '다국어 콘텐츠 분석 중...',
       progress: 5,
       error: null,
@@ -227,16 +235,17 @@ export default function App() {
     });
 
     try {
-      // 1. Parallel Structure Design
-      updateState({ processingMessage: `구조 설계 중 (${state.slideCount}장) - 한국어, 영어, 일본어`, progress: 10 });
+      updateState({ processingMessage: `구조 설계 중 (${state.slideCount}장)`, progress: 10 });
       
-      const structurePromises = LANGUAGES.map(async (lang) => {
+      const structurePromises = state.selectedLanguages.map(async (lang) => {
         const s = await generateCarouselStructure(
           selectedTopic, 
           lang, 
           state.slideCount,
           state.usp,
           state.description,
+          state.targetAudience,
+          state.toneAndManner,
           apiKey
         );
         return { lang, structure: s };
@@ -248,31 +257,41 @@ export default function App() {
 
       updateState({
         structures: newStructures,
-        currentStep: GenerationStep.COPYWRITING,
-        processingMessage: '카피라이팅 최적화 중...',
+        currentStep: GenerationStep.STRUCTURE_DESIGN,
+        isProcessing: autoMode,
+        processingMessage: autoMode ? '카피라이팅 최적화 중...' : '',
         progress: 30
       });
 
-      await new Promise(r => setTimeout(r, 1000)); // UX pause
+      if (autoMode) {
+        await new Promise(r => setTimeout(r, 1000));
+        handleGenerateImages(newStructures, sessionSeed, true);
+      }
 
-      // 2. Image Generation (Unified Visuals with Seed)
+    } catch (e) {
+      handleError(e);
+    }
+  };
+
+  const handleGenerateImages = async (structures: Partial<Record<Language, CarouselStructure>>, sessionSeed: number, autoMode: boolean) => {
+    try {
       updateState({
         currentStep: GenerationStep.IMAGE_GENERATION,
-        processingMessage: 'Nanobanana 3.0 Pro로 이미지 생성 중... (순차 처리)',
+        isProcessing: true,
+        processingMessage: '이미지 생성 중... (순차 처리)',
         progress: 40
       });
 
-      // Prepare all generation tasks
       const allTasks: { id: number, lang: Language, prompt: string, text: string }[] = [];
-      const masterStructure = newStructures['EN'] || newStructures['KO'] || newStructures['JA'];
+      const masterStructure = structures['EN'] || structures['KO'] || structures['JA'] || structures['ZH'];
 
       if (masterStructure) {
         masterStructure.slides.forEach(masterSlide => {
           const slideId = masterSlide.id;
           const commonVisualPrompt = masterSlide.imagePrompt;
 
-          LANGUAGES.forEach(lang => {
-            const langStruct = newStructures[lang];
+          state.selectedLanguages.forEach(lang => {
+            const langStruct = structures[lang];
             if (langStruct) {
               const targetSlide = langStruct.slides.find(s => s.id === slideId);
               if (targetSlide) {
@@ -288,7 +307,6 @@ export default function App() {
         });
       }
 
-      // Execute tasks in batches to prevent API rate limits/errors
       const BATCH_SIZE = 3; 
       const newImages = { ...state.generatedImages };
       
@@ -302,7 +320,6 @@ export default function App() {
               const url = await generateSlideImage(task.prompt, task.text, task.lang, state.referenceImages, sessionSeed, apiKey);
               if (url) {
                 newImages[`${task.id}-${task.lang}`] = url;
-                // Update state incrementally for better UX
                 setState(prev => ({ 
                   ...prev, 
                   generatedImages: { ...prev.generatedImages, [`${task.id}-${task.lang}`]: url } 
@@ -317,15 +334,32 @@ export default function App() {
       updateState({
         generatedImages: newImages,
         currentStep: GenerationStep.CAPTION_GENERATION,
+        isProcessing: autoMode,
+        processingMessage: autoMode ? '바이럴 캡션 및 해시태그 생성 중...' : '',
+        progress: 85
+      });
+
+      if (autoMode) {
+        handleGenerateCaptions(structures, true);
+      }
+    } catch (e) {
+      handleError(e);
+    }
+  };
+
+  const handleGenerateCaptions = async (structures: Partial<Record<Language, CarouselStructure>>, autoMode: boolean) => {
+    try {
+      updateState({
+        currentStep: GenerationStep.CAPTION_GENERATION,
+        isProcessing: true,
         processingMessage: '바이럴 캡션 및 해시태그 생성 중...',
         progress: 85
       });
 
-      // 3. Caption Generation (Parallel)
-      const captionPromises = LANGUAGES.map(async (lang) => {
-        const struct = newStructures[lang];
+      const captionPromises = state.selectedLanguages.map(async (lang) => {
+        const struct = structures[lang];
         if (struct) {
-          const cap = await generateInstagramCaption(selectedTopic, struct, lang, apiKey);
+          const cap = await generateInstagramCaption(state.topic, struct, lang, apiKey);
           return { lang, cap };
         }
         return null;
@@ -344,7 +378,6 @@ export default function App() {
         processingMessage: '',
         progress: 100
       });
-
     } catch (e) {
       handleError(e);
     }
@@ -397,7 +430,7 @@ export default function App() {
   };
 
   const downloadAllImages = async () => {
-    for (const lang of LANGUAGES) {
+    for (const lang of state.selectedLanguages) {
       await downloadLanguageSet(lang);
       await new Promise(r => setTimeout(r, 250)); // Delay between languages
     }
@@ -408,7 +441,7 @@ export default function App() {
     if (cap) {
       const text = `${cap.mainText}\n\n${cap.hashtags.map(t => '#' + t).join(' ')}`;
       navigator.clipboard.writeText(text);
-      alert(`${lang === 'KO' ? '한국어' : lang === 'JA' ? '일본어' : '영어'} 캡션이 복사되었습니다!`);
+      alert(`${lang === 'KO' ? '한국어' : lang === 'JA' ? '일본어' : lang === 'ZH' ? '중국어' : '영어'} 캡션이 복사되었습니다!`);
     }
   };
 
@@ -418,7 +451,6 @@ export default function App() {
     const steps = [
       { id: GenerationStep.TOPIC_SELECTION, icon: Search, label: '주제 선정' },
       { id: GenerationStep.STRUCTURE_DESIGN, icon: LayoutTemplate, label: '구조 설계' },
-      { id: GenerationStep.COPYWRITING, icon: PenTool, label: '카피라이팅' },
       { id: GenerationStep.IMAGE_GENERATION, icon: ImageIcon, label: '이미지' },
       { id: GenerationStep.CAPTION_GENERATION, icon: Type, label: '캡션' },
       { id: GenerationStep.FINAL_RESULT, icon: CheckCircle, label: '완료' },
@@ -518,7 +550,7 @@ export default function App() {
                       type="text" 
                       value={state.topic}
                       onChange={(e) => updateState({ topic: e.target.value })}
-                      onKeyDown={(e) => e.key === 'Enter' && state.topic && startGeneration()}
+                      onKeyDown={(e) => e.key === 'Enter' && state.topic && handleGenerateStructures(false)}
                       placeholder="주제를 입력하세요"
                       className="flex-1 bg-transparent border-none outline-none text-white px-2 py-2 text-lg placeholder:text-slate-600"
                       autoFocus
@@ -549,12 +581,12 @@ export default function App() {
                       {state.isResearching ? (
                         <>
                           <RefreshCw size={12} className="animate-spin" />
-                          딥리서치 분석 중...
+                          AI 자동 기획 중...
                         </>
                       ) : (
                         <>
                           <BrainCircuit size={12} />
-                          딥리서치 실행
+                          AI 자동 기획
                         </>
                       )}
                     </button>
@@ -591,7 +623,7 @@ export default function App() {
                       type="text" 
                       value={state.usp}
                       onChange={(e) => updateState({ usp: e.target.value })}
-                      placeholder="딥리서치로 자동 생성되거나 직접 입력"
+                      placeholder="AI 자동 기획으로 생성되거나 직접 입력"
                       className="w-full bg-slate-800/50 border border-slate-700 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-blue-500/50 transition-colors placeholder:text-slate-600"
                     />
                   </div>
@@ -605,6 +637,34 @@ export default function App() {
                       placeholder="콘텐츠의 방향성이나 포함할 내용을 입력하세요"
                       rows={1}
                       className="w-full bg-slate-800/50 border border-slate-700 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-blue-500/50 transition-colors placeholder:text-slate-600 resize-none"
+                    />
+                  </div>
+                </div>
+
+                {/* Target Audience & Tone and Manner Fields */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 animate-fade-in mt-4">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-slate-400 flex items-center gap-1.5">
+                      <Users size={14} /> 타겟 고객
+                    </label>
+                    <input 
+                      type="text" 
+                      value={state.targetAudience}
+                      onChange={(e) => updateState({ targetAudience: e.target.value })}
+                      placeholder="예: 2030 직장인, 초보 여행자 등"
+                      className="w-full bg-slate-800/50 border border-slate-700 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-blue-500/50 transition-colors placeholder:text-slate-600"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-slate-400 flex items-center gap-1.5">
+                      <Palette size={14} /> 톤앤매너
+                    </label>
+                    <input 
+                      type="text" 
+                      value={state.toneAndManner}
+                      onChange={(e) => updateState({ toneAndManner: e.target.value })}
+                      placeholder="예: 전문적인, 유머러스한, 감성적인"
+                      className="w-full bg-slate-800/50 border border-slate-700 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-blue-500/50 transition-colors placeholder:text-slate-600"
                     />
                   </div>
                 </div>
@@ -681,20 +741,59 @@ export default function App() {
                   </div>
                 </div>
 
+                {/* Language Selection */}
+                <div className="flex flex-col gap-2 pt-2 px-2">
+                  <div className="flex items-center gap-2 text-slate-400 text-sm mb-1">
+                    <Globe size={16} />
+                    <span>생성 언어:</span>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      onClick={() => updateState({ selectedLanguages: ['KO', 'EN', 'JA', 'ZH'] })}
+                      className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors border ${state.selectedLanguages.length === 4 ? 'bg-blue-600 text-white border-blue-500' : 'bg-slate-800 text-slate-400 border-slate-700 hover:bg-slate-700'}`}
+                    >
+                      모든 언어
+                    </button>
+                    {LANGUAGES.map(lang => {
+                      const isSelected = state.selectedLanguages.includes(lang);
+                      const label = lang === 'KO' ? '한국어' : lang === 'EN' ? '영어' : lang === 'JA' ? '일본어' : '중국어';
+                      return (
+                        <button
+                          key={lang}
+                          onClick={() => {
+                            let newLangs = [...state.selectedLanguages];
+                            if (isSelected) {
+                              newLangs = newLangs.filter(l => l !== lang);
+                            } else {
+                              newLangs.push(lang);
+                            }
+                            if (newLangs.length === 0) newLangs = ['KO']; // Prevent empty selection
+                            updateState({ selectedLanguages: newLangs });
+                          }}
+                          className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors border ${isSelected && state.selectedLanguages.length !== 4 ? 'bg-blue-600 text-white border-blue-500' : 'bg-slate-800 text-slate-400 border-slate-700 hover:bg-slate-700'}`}
+                        >
+                          {label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
                 {/* Action Buttons */}
-                <div className="flex gap-3 pt-2">
+                <div className="flex gap-3 pt-4">
                   <button 
-                    disabled={true}
-                    className="flex-1 bg-slate-800 text-slate-500 px-4 py-3 rounded-xl font-medium cursor-not-allowed flex items-center justify-center gap-2 opacity-50"
+                    onClick={() => handleGenerateStructures(false)}
+                    disabled={!state.topic}
+                    className="flex-1 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-4 py-3 rounded-xl font-medium border border-slate-700 transition-all flex items-center justify-center gap-2"
                   >
-                    <ChevronLeft size={18} /> 이전 단계
+                    다음 단계 (수정하며 진행) <ChevronRight size={18} />
                   </button>
                   <button 
-                    onClick={startGeneration}
+                    onClick={() => handleGenerateStructures(true)}
                     disabled={!state.topic}
                     className="flex-1 bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-blue-400 disabled:opacity-50 disabled:cursor-not-allowed text-white px-4 py-3 rounded-xl font-bold transition-all flex items-center justify-center gap-2 shadow-lg"
                   >
-                    다음 단계 <ChevronRight size={18} />
+                    <Zap size={18} /> 자동화 진행 (최종까지 자동)
                   </button>
                 </div>
 
@@ -705,7 +804,7 @@ export default function App() {
         )}
 
         {/* Processing State */}
-        {state.currentStep > GenerationStep.TOPIC_SELECTION && state.currentStep < GenerationStep.FINAL_RESULT && (
+        {state.isProcessing && (
            <div className="flex flex-col items-center justify-center min-h-[50vh] space-y-8">
              <div className="relative">
                <div className="w-32 h-32 rounded-full border-4 border-slate-800"></div>
@@ -727,6 +826,150 @@ export default function App() {
                </div>
              </div>
            </div>
+        )}
+
+        {/* Step 2: Structure Design Review */}
+        {state.currentStep === GenerationStep.STRUCTURE_DESIGN && !state.isProcessing && (
+          <div className="space-y-8 animate-fade-in-up">
+            <div className="flex justify-between items-end border-b border-white/10 pb-6">
+              <div>
+                <h2 className="text-3xl font-bold text-white mb-2">구조 및 카피라이팅 검토</h2>
+                <p className="text-slate-400">생성된 슬라이드 구조와 텍스트를 확인하고 수정할 수 있습니다.</p>
+              </div>
+              <div className="flex gap-3">
+                <button 
+                  onClick={() => handleGenerateImages(state.structures, state.sessionSeed, false)}
+                  className="flex items-center gap-2 bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-blue-400 text-white px-5 py-2.5 rounded-xl font-bold shadow-lg transition-all"
+                >
+                  다음 단계 (이미지 생성) <ChevronRight size={18} />
+                </button>
+                <button 
+                  onClick={() => handleGenerateImages(state.structures, state.sessionSeed, true)}
+                  className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-white px-5 py-2.5 rounded-xl font-bold border border-slate-700 transition-all"
+                >
+                  <Zap size={18} /> 이후 자동화
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-12">
+              {state.selectedLanguages.map(lang => {
+                const struct = state.structures[lang];
+                if (!struct) return null;
+                return (
+                  <div key={lang} className="space-y-4">
+                    <div className="flex items-center gap-3">
+                      <div className="bg-blue-500/10 p-2 rounded-lg border border-blue-500/20">
+                        <Globe className="text-blue-400" size={20}/>
+                      </div>
+                      <h3 className="text-xl font-bold text-white">
+                        {lang === 'KO' ? '한국어' : lang === 'EN' ? '영어' : lang === 'JA' ? '일본어' : '중국어'}
+                      </h3>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
+                      {struct.slides.map((slide, idx) => (
+                        <div key={slide.id} className="bg-slate-800 rounded-xl p-4 border border-slate-700 flex flex-col gap-3">
+                          <div className="flex justify-between items-center">
+                            <span className="text-xs font-bold bg-slate-700 text-slate-300 px-2 py-1 rounded">Slide {slide.id}</span>
+                            <span className="text-xs text-blue-400 font-medium uppercase">{slide.role}</span>
+                          </div>
+                          <div>
+                            <label className="block text-xs text-slate-400 mb-1">이미지 텍스트 (Text Overlay)</label>
+                            <textarea 
+                              value={slide.textOverlay}
+                              onChange={(e) => {
+                                const newStructs = { ...state.structures };
+                                newStructs[lang]!.slides[idx].textOverlay = e.target.value;
+                                updateState({ structures: newStructs });
+                              }}
+                              className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-sm text-white focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none resize-none h-20"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs text-slate-400 mb-1">이미지 프롬프트 (Image Prompt)</label>
+                            <textarea 
+                              value={slide.imagePrompt}
+                              onChange={(e) => {
+                                const newStructs = { ...state.structures };
+                                newStructs[lang]!.slides[idx].imagePrompt = e.target.value;
+                                updateState({ structures: newStructs });
+                              }}
+                              className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-sm text-slate-300 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none resize-none h-20"
+                            />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Step 4: Image Generation Review */}
+        {state.currentStep === GenerationStep.CAPTION_GENERATION && !state.isProcessing && (
+          <div className="space-y-8 animate-fade-in-up">
+            <div className="flex justify-between items-end border-b border-white/10 pb-6">
+              <div>
+                <h2 className="text-3xl font-bold text-white mb-2">이미지 검토</h2>
+                <p className="text-slate-400">생성된 이미지를 확인하고 캡션 생성을 진행합니다.</p>
+              </div>
+              <div className="flex gap-3">
+                <button 
+                  onClick={() => handleGenerateCaptions(state.structures, false)}
+                  className="flex items-center gap-2 bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-blue-400 text-white px-5 py-2.5 rounded-xl font-bold shadow-lg transition-all"
+                >
+                  다음 단계 (캡션 생성) <ChevronRight size={18} />
+                </button>
+                <button 
+                  onClick={() => handleGenerateCaptions(state.structures, true)}
+                  className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-white px-5 py-2.5 rounded-xl font-bold border border-slate-700 transition-all"
+                >
+                  <Zap size={18} /> 이후 자동화
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-12">
+              {state.selectedLanguages.map(lang => {
+                const struct = state.structures[lang];
+                if (!struct) return null;
+                return (
+                  <div key={lang} className="space-y-4">
+                    <div className="flex items-center gap-3">
+                      <div className="bg-blue-500/10 p-2 rounded-lg border border-blue-500/20">
+                        <Globe className="text-blue-400" size={20}/>
+                      </div>
+                      <h3 className="text-xl font-bold text-white">
+                        {lang === 'KO' ? '한국어' : lang === 'EN' ? '영어' : lang === 'JA' ? '일본어' : '중국어'}
+                      </h3>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+                      {struct.slides.map((slide) => {
+                        const imgKey = `${slide.id}-${lang}`;
+                        const imgUrl = state.generatedImages[imgKey];
+                        return (
+                          <div key={slide.id} className="group relative aspect-[4/5] bg-slate-800 rounded-xl overflow-hidden shadow-2xl border border-slate-700/50">
+                            {imgUrl ? (
+                              <img src={imgUrl} alt={slide.title} className="w-full h-full object-cover" />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center bg-slate-800">
+                                <ImageIcon className="text-slate-600 animate-pulse" size={32} />
+                              </div>
+                            )}
+                            <div className="absolute top-2 left-2 bg-black/60 backdrop-blur-md px-2 py-1 rounded-md">
+                              <span className="text-xs font-bold text-white">Slide {slide.id}</span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         )}
 
         {/* Step 5: Final Result (Multi-Language) */}
@@ -755,7 +998,7 @@ export default function App() {
             </div>
 
             {/* Language Sections */}
-            {LANGUAGES.map((lang) => {
+            {state.selectedLanguages.map((lang) => {
               const struct = state.structures[lang];
               const caption = state.finalCaptions[lang];
               if (!struct) return null;
@@ -768,7 +1011,7 @@ export default function App() {
                         <Globe className="text-blue-400" size={20}/>
                       </div>
                       <h3 className="text-xl font-bold text-white">
-                        {lang === 'KO' ? 'Korean (한국어)' : lang === 'JA' ? 'Japanese (日本語)' : 'English'}
+                        {lang === 'KO' ? 'Korean (한국어)' : lang === 'JA' ? 'Japanese (日本語)' : lang === 'ZH' ? 'Chinese (中文)' : 'English'}
                       </h3>
                     </div>
                     
@@ -778,7 +1021,7 @@ export default function App() {
                       className="flex items-center gap-2 text-sm bg-slate-800 hover:bg-slate-700 text-blue-400 border border-slate-700 px-4 py-2 rounded-lg transition-colors"
                     >
                       <FolderDown size={16} />
-                      {lang === 'KO' ? '한국어 세트 저장' : lang === 'JA' ? '일본어 세트 저장' : '영어 세트 저장'}
+                      {lang === 'KO' ? '한국어 세트 저장' : lang === 'JA' ? '일본어 세트 저장' : lang === 'ZH' ? '중국어 세트 저장' : '영어 세트 저장'}
                     </button>
                   </div>
 
@@ -873,6 +1116,14 @@ export default function App() {
         )}
 
       </main>
+
+      {/* Developer Info */}
+      <div className="fixed bottom-4 left-4 z-50">
+        <span className="text-slate-500 text-xs font-medium bg-slate-900/50 px-3 py-1.5 rounded-full border border-slate-800 backdrop-blur-sm">
+          개발자 : 정혁신
+        </span>
+      </div>
+
       {/* API Key Modal */}
       {isApiKeyModalOpen && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-fade-in">

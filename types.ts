@@ -1,13 +1,12 @@
 export enum GenerationStep {
   TOPIC_SELECTION = 0,
   STRUCTURE_DESIGN = 1,
-  COPYWRITING = 2,
-  IMAGE_GENERATION = 3,
-  CAPTION_GENERATION = 4,
-  FINAL_RESULT = 5,
+  IMAGE_GENERATION = 2,
+  CAPTION_GENERATION = 3,
+  FINAL_RESULT = 4,
 }
 
-export type Language = 'KO' | 'EN' | 'JA';
+export type Language = 'KO' | 'EN' | 'JA' | 'ZH';
 
 export interface SlideContent {
   id: number;
@@ -41,8 +40,13 @@ export interface AppState {
   topic: string;
   usp: string; // Unique Selling Proposition
   description: string; // Detailed Description
+  targetAudience: string; // Target Audience
+  toneAndManner: string; // Tone and Manner
   slideCount: number; // Number of slides to generate (1-10)
   referenceImages: string[]; // Array of Base64 strings (Max 10)
+  selectedLanguages: Language[]; // Selected languages for generation
+  isAutoMode: boolean; // Whether to automatically proceed to the final step
+  sessionSeed: number; // Seed for consistent image generation
   structures: Partial<Record<Language, CarouselStructure>>;
   generatedImages: Record<string, string>; // Key: "slideId-Lang" -> Url
   finalCaptions: Partial<Record<Language, FinalCaption>>;
